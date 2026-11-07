@@ -97,7 +97,7 @@ repoguard/
 └── ghcomment.py   sticky PR comment
 ```
 
-Only depends on `requests`, `PyYAML` and `packaging`. 79 tests run offline against fake OSV and GitHub APIs:
+Only depends on `requests`, `PyYAML` and `packaging`. 79 tests run offline against fake OSV and GitHub APIs, and CI also runs live tests against the real OSV.dev API:
 
 ```bash
 pip install ".[test]" && pytest

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import os
 import re
 import shutil
@@ -28,6 +29,15 @@ def _git(root: Path, *args: str) -> str:
         return out.stdout.strip() if out.returncode == 0 else ""
     except (OSError, subprocess.SubprocessError):
         return ""
+
+
+def _pr_head_sha(event_path: str | None) -> str | None:
+    try:
+        with open(event_path or "", encoding="utf-8") as fh:
+            event = json.load(fh)
+        return ((event.get("pull_request") or {}).get("head") or {}).get("sha")
+    except (OSError, ValueError, AttributeError):
+        return None
 
 
 class TargetError(RuntimeError):
@@ -64,6 +74,10 @@ def scan_path(root: Path, *, label: str | None = None, slug: str | None = None, 
         result.repo = os.environ["GITHUB_REPOSITORY"]
         result.commit = os.environ.get("GITHUB_SHA")
         result.server_url = os.environ.get("GITHUB_SERVER_URL", result.server_url)
+        # On pull requests GITHUB_SHA is a temporary merge commit; link to the PR's head instead.
+        head = _pr_head_sha(os.environ.get("GITHUB_EVENT_PATH"))
+        if head:
+            result.commit = head
     elif git:
         result.repo = slug or github_slug(_git(root, "remote", "get-url", "origin"))
         result.commit = _git(root, "rev-parse", "HEAD") or None

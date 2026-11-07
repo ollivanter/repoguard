@@ -112,6 +112,10 @@ def test_github_actions_env_sets_repo(repo, monkeypatch):
     monkeypatch.setenv("GITHUB_SHA", "c" * 40)
     r = scan_path(repo, offline=True)
     assert (r.repo, r.commit) == ("me/demo", "c" * 40)
+    event = repo.parent / "event.json"
+    event.write_text(json.dumps({"pull_request": {"head": {"sha": "d" * 40}}}))
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    assert scan_path(repo, offline=True).commit == "d" * 40
 
 
 def test_cli_exit_codes_and_outputs(repo, tmp_path, capsys, monkeypatch):

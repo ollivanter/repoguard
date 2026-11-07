@@ -24,3 +24,5 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: python -m pip install ".[test]"
       - run: python -m pytest -q
+        env:
+          REPOGUARD_LIVE: "1"          # also run the tests that call the real OSV.dev API
