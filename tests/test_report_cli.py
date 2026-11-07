@@ -63,19 +63,28 @@ def test_markdown_truncates(monkeypatch):
     assert len(md) < 64000 and "more. Download the full HTML report" in md
 
 
-def test_html_is_escaped_and_complete():
-    page = report.html_report(sample_result())
+def embedded(page: str) -> dict:
+    start = page.index('<script type="application/json" id="repoguard-data">') + len('<script type="application/json" id="repoguard-data">')
+    return json.loads(page[start: page.index("</script>", start)])
+
+
+def test_html_report_embeds_data_safely():
+    r = sample_result()
+    r.findings[0].title = "</script><script>alert(1)</script>"
+    page = report.html_report(r)
     assert page.startswith("<!doctype html>") and page.rstrip().endswith("</html>")
-    assert "<script>alert(1)</script>" not in page
-    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in page
-    assert page.count('class="finding"') == 4
-    assert "<code>actions/checkout@v6</code>" in page
-    assert "Dependency vulnerabilities weren" in page
+    assert "<script>alert(1)" not in page and "</script><script>alert" not in page
+    assert "\\u003c/script\\u003e" in page
+    data = embedded(page)
+    assert "</script><script>alert(1)</script>" in [f["title"] for f in data["findings"]]   # round-trips exactly
+    assert data["score"] == r.score and len(data["findings"]) == 4
+    assert "Content-Security-Policy" in page and "connect-src" not in page        # no network from the file
 
 
-def test_html_empty_state():
-    r = ScanResult(target="clean")
-    assert "No findings." in report.html_report(r)
+def test_html_report_title_is_escaped():
+    r = ScanResult(target="<img src=x onerror=alert(1)>")
+    page = report.html_report(r)
+    assert "<img src=x" not in page.split("<style>")[0]
 
 
 def test_json_roundtrip():
@@ -195,3 +204,17 @@ def test_pr_number(tmp_path):
     p.write_text(json.dumps({"ref": "refs/heads/main"}))
     assert ghcomment.pr_number(str(p)) is None
     assert ghcomment.pr_number(None) is None
+
+
+def test_terminal_output_strips_escape_sequences():
+    r = ScanResult(target="x")
+    r.findings = [F(Severity.HIGH, file="evil\x1b]0;pwned\x07.py", line=1, title="t\x1b[2Jitle")]
+    out = report.terminal(r)
+    assert "\x1b]" not in out and "\x1b[2J" not in out and "evil?]0;pwned?.py" in out
+
+
+def test_markdown_link_text_escapes_brackets():
+    r = sample_result()
+    r.findings[0].file = "a](https://evil.example)[x.py"
+    md = report.markdown(r)
+    assert "](https://evil.example)" not in md.split("blob/")[0] or "\\]" in md

@@ -28,3 +28,13 @@ def score(findings: list[Finding]) -> tuple[int, str]:
         value = min(value, 59)           # a live critical issue is always a failing grade
     grade = next(g for cutoff, g in GRADES if value >= cutoff)
     return value, grade
+
+
+def breakdown(findings: list[Finding]) -> list[dict]:
+    """Points lost per rule, biggest first, for the score explanation."""
+    counts: dict[tuple[str, Severity], int] = defaultdict(int)
+    for f in findings:
+        counts[(f.rule, f.severity)] += 1
+    rows = [{"rule": rule, "severity": sev.label, "count": n, "points": round(pts, 1)}
+            for (rule, sev), pts in deductions(findings).items() for n in [counts[(rule, sev)]]]
+    return sorted(rows, key=lambda r: (-r["points"], r["rule"]))

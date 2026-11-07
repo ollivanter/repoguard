@@ -5,6 +5,7 @@ import hashlib
 import math
 import re
 import subprocess
+import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ from .models import Finding, Severity
 
 IGNORE_MARKER = re.compile(r"repoguard\s*:\s*ignore", re.I)
 MAX_LINE = 5000
+GENERIC_MAX_LINE = 1000
 
 
 @dataclass(frozen=True)
@@ -132,7 +134,10 @@ def scan_line(line: str, line_no: int) -> list[Hit]:
     line = line[:MAX_LINE]
     hits: list[Hit] = []
     taken: list[tuple[int, int]] = []
+    long_line = len(line) > GENERIC_MAX_LINE
     for rule in RULES:
+        if rule.generic and long_line:      # keeps the broad patterns linear-time on minified blobs
+            continue
         for m in rule.pattern.finditer(line):
             start, end = m.span()
             if any(start < e and end > s for s, e in taken):
@@ -158,6 +163,59 @@ HISTORY_NOTE = ("Deleting it in a later commit isn't enough: it stays in git his
                 "cloned or forked the repo still has it. Revoke it first. Rewriting history "
                 "(git filter-repo, BFG) is optional cleanup, not a fix.")
 
+DEFAULT_ENV_NAMES = {
+    "aws-access-key": "AWS_ACCESS_KEY_ID", "github-token": "GITHUB_TOKEN", "github-fine-grained-token": "GITHUB_TOKEN",
+    "anthropic-key": "ANTHROPIC_API_KEY", "openai-key": "OPENAI_API_KEY", "stripe-live-key": "STRIPE_SECRET_KEY",
+    "slack-token": "SLACK_TOKEN", "slack-webhook": "SLACK_WEBHOOK_URL", "google-api-key": "GOOGLE_API_KEY",
+    "telegram-bot-token": "TELEGRAM_BOT_TOKEN", "notion-token": "NOTION_TOKEN", "database-url-password": "DATABASE_URL",
+}
+KEY_ON_LINE = re.compile(r"""^\s*(?:export\s+|const\s+|let\s+|var\s+)?["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*(?::=|=>|=|:)""")
+
+
+def env_name(hit: "Hit") -> str:
+    m = KEY_ON_LINE.match(hit.line)
+    if m and hit.rule.id != "database-url-password":
+        return re.sub(r"[^A-Za-z0-9]+", "_", m.group(1)).strip("_").upper() or "SECRET"
+    return DEFAULT_ENV_NAMES.get(hit.rule.id, "SECRET")
+
+
+def secret_patch(hit: "Hit", file: str) -> dict | None:
+    """Suggested replacement for the line, built only from the masked text."""
+    if hit.rule.id in ("private-key", "jwt"):
+        return None
+    masked_value = mask(hit.secret)
+    line = hit.line.rstrip("\n").replace(hit.secret, masked_value)
+    name = env_name(hit)
+    lower = file.lower()
+    ext = Path(lower).suffix
+    indent = line[: len(line) - len(line.lstrip())]
+    quoted = re.search(r"""(["'])[^"'\n]*?""" + re.escape(masked_value) + r"""[^"'\n]*?\1""", line)
+    if hit.rule.id == "database-url-password":
+        if not quoted and ext not in (".env", ".sh", ".bash", ".zsh", ""):
+            return None
+        target = quoted.group(0) if quoted else line.split("=", 1)[-1].strip()
+    else:
+        target = quoted.group(0) if quoted else masked_value
+    if ext == ".py":
+        after = line.replace(target, f'os.environ["{name}"]', 1)
+    elif ext in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
+        after = line.replace(target, f"process.env.{name}", 1)
+    elif ext in (".rb",):
+        after = line.replace(target, f'ENV.fetch("{name}")', 1)
+    elif ext in (".go",):
+        after = line.replace(target, f'os.Getenv("{name}")', 1)
+    elif lower.startswith(".github/workflows/") and ext in (".yml", ".yaml"):
+        after = line.replace(target, "${{ secrets." + name + " }}", 1)
+    elif ext in (".sh", ".bash", ".zsh") or lower.rsplit("/", 1)[-1] in ("dockerfile", "containerfile"):
+        after = line.replace(target, '"${' + name + ':?' + name + ' is not set}"', 1)
+    elif ext == ".env" or lower.rsplit("/", 1)[-1].startswith(".env"):
+        after = f"{indent}# {name} comes from the environment or your secret manager; don't commit .env files"
+    else:
+        return None
+    if after == line:
+        return None
+    return {"start": hit.line_no, "before": [line], "after": [after]}
+
 
 def _finding(hit: Hit, file: str, *, commit: str | None = None, date: str | None = None,
              commits: int = 1, first_seen: tuple[str, str] | None = None) -> Finding:
@@ -179,19 +237,32 @@ def _finding(hit: Hit, file: str, *, commit: str | None = None, date: str | None
         "Then load it from an environment variable or a secret store (e.g. GitHub Actions secrets) "
         "instead of the code. If it's a false positive, add `# repoguard:ignore` to the line "
         "or the path to `.repoguardignore`.")
+    details = {"rule": rule.id, "secret_type": rule.name, "masked": mask(hit.secret)}
+    if commit:
+        details.update(commit=commit, date=date, commits=commits)
+    elif first_seen:
+        details.update(first_commit=first_seen[0], first_date=first_seen[1])
     return Finding(rule=f"secret/{rule.id}", title=title, severity=sev, category="secrets",
                    file=file, line=hit.line_no, description=desc, fix=fix.strip(),
-                   evidence=hit.evidence(), commit=commit,
+                   evidence=hit.evidence(), commit=commit, details=details,
+                   patch=None if commit else secret_patch(hit, file),
                    fingerprint=hit.fp + ("-h" if commit else ""))
 
 
-def scan_history(root: Path, extra_ignores: list[str], max_commits: int = 1000):
-    """Yield (hit, file, commit, date) for secrets in lines added anywhere in history, newest first."""
+class Stop(Exception):
+    """Raised by a should_stop callback to abort a long scan."""
+
+
+def scan_history(root: Path, extra_ignores: list[str], max_commits: int = 1000,
+                 should_stop=None, deadline: float | None = None, state: dict | None = None):
+    """Yield (hit, file, commit, date) for secrets in lines added anywhere in history, newest first.
+    Stops early (setting state["truncated"]) when the deadline passes."""
     cmd = ["git", "-C", str(root), "log", "--all", "-p", "--no-color", "--no-ext-diff", "--no-renames",
-           "--unified=0", "--format=@@@REPOGUARD %H %ad", "--date=short", f"-n{max_commits}"]
+           "--no-textconv", "--unified=0", "--format=@@@REPOGUARD %H %ad", "--date=short", f"-n{max_commits}"]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     commit = date = file = None
     new_line = 0
+    count = 0
     assert proc.stdout is not None
     try:
         for raw in proc.stdout:
@@ -199,6 +270,13 @@ def scan_history(root: Path, extra_ignores: list[str], max_commits: int = 1000):
             if line.startswith("@@@REPOGUARD "):
                 _, commit, date = (line.split(" ") + ["", ""])[:3]
                 file = None
+                count += 1
+                if should_stop:
+                    should_stop()
+                if deadline is not None and time.monotonic() > deadline:
+                    if state is not None:
+                        state["truncated"] = True
+                    break
             elif line.startswith("diff --git "):
                 file = None
             elif line.startswith("+++ "):
@@ -214,42 +292,57 @@ def scan_history(root: Path, extra_ignores: list[str], max_commits: int = 1000):
                     yield hit, file, commit, date
                 new_line += 1
     finally:
+        if state is not None:
+            state["commits"] = count
+        proc.kill() if proc.poll() is None else None
         proc.stdout.close()
         proc.wait()
 
 
-def scan(root: Path, *, history: bool = True, max_commits: int = 1000,
-         extra_ignores: list[str] | None = None, is_git: bool = False) -> tuple[list[Finding], dict]:
-    extra = list(extra_ignores or []) + load_ignore_patterns(root)
-    files = list_files(root, extra)
+def scan_files(root: Path, files: list[str], should_stop=None) -> dict[str, tuple[Hit, str]]:
     current: dict[str, tuple[Hit, str]] = {}
-    for rel in files:
-        text = read_text(root / rel)
+    for i, rel in enumerate(files):
+        if should_stop and i % 200 == 0:
+            should_stop()
+        text = read_text(root / rel, root)
         if text is None:
             continue
         for hit in scan_text(text):
             current.setdefault(hit.fp, (hit, rel))
+    return current
 
-    stats = {"files_scanned": len(files)}
+
+def history_findings(root: Path, current: dict[str, tuple[Hit, str]], extra: list[str], *,
+                     max_commits: int = 1000, should_stop=None, time_budget: float | None = None
+                     ) -> tuple[list[Finding], dict[str, tuple[str, str]], dict]:
     first_seen: dict[str, tuple[str, str]] = {}
     old: dict[str, dict] = {}
-    if history and is_git:
-        seen_commits = set()
-        for hit, file, commit, date in scan_history(root, extra, max_commits):
-            seen_commits.add(commit)
-            fp = hit.fp
-            if fp in current:
-                first_seen[fp] = (commit, date)          # keeps overwriting → earliest
-                continue
-            entry = old.setdefault(fp, {"commits": set()})
-            entry.update(hit=hit, file=file, commit=commit, date=date)   # earliest wins
-            entry["commits"].add(commit)
-        count = subprocess.run(["git", "-C", str(root), "rev-list", "--all", "--count"],
-                               capture_output=True, text=True).stdout.strip()
-        stats["commits_scanned"] = min(int(count or 0), max_commits)
+    state: dict = {}
+    deadline = time.monotonic() + time_budget if time_budget else None
+    for hit, file, commit, date in scan_history(root, extra, max_commits, should_stop, deadline, state):
+        fp = hit.fp
+        if fp in current:
+            first_seen[fp] = (commit, date)          # keeps overwriting → earliest
+            continue
+        entry = old.setdefault(fp, {"commits": set()})
+        entry.update(hit=hit, file=file, commit=commit, date=date)   # earliest wins
+        entry["commits"].add(commit)
+    findings = [_finding(e["hit"], e["file"], commit=e["commit"], date=e["date"], commits=len(e["commits"]))
+                for e in old.values()]
+    return findings, first_seen, {"commits_scanned": state.get("commits", 0), "truncated": state.get("truncated", False)}
 
+
+def scan(root: Path, *, history: bool = True, max_commits: int = 1000,
+         extra_ignores: list[str] | None = None, is_git: bool = False) -> tuple[list[Finding], dict]:
+    """Working tree + history in one call (used by tests and simple callers)."""
+    extra = list(extra_ignores or []) + load_ignore_patterns(root)
+    files = list_files(root, extra)
+    current = scan_files(root, files)
+    stats = {"files_scanned": len(files)}
+    first_seen: dict = {}
+    old_findings: list[Finding] = []
+    if history and is_git:
+        old_findings, first_seen, hstats = history_findings(root, current, extra, max_commits=max_commits)
+        stats["commits_scanned"] = hstats["commits_scanned"]
     findings = [_finding(hit, rel, first_seen=first_seen.get(fp)) for fp, (hit, rel) in current.items()]
-    for e in old.values():
-        findings.append(_finding(e["hit"], e["file"], commit=e["commit"], date=e["date"],
-                                 commits=len(e["commits"])))
-    return findings, stats
+    return findings + old_findings, stats

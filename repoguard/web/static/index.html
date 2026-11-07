@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="description" content="Audit a GitHub repository for leaked secrets, vulnerable dependencies, risky Actions workflows and Dockerfiles.">
+<title>RepoGuard · repository security audit</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='2' y='2' width='12' height='12' fill='%2334d399' transform='rotate(45 8 8)'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to content</a>
+<div class="texture" aria-hidden="true"></div>
+
+<header class="topbar" id="top">
+  <a class="brand" href="#audit" aria-label="RepoGuard home"><span class="brand-mark" aria-hidden="true"></span>repoguard</a>
+  <nav class="nav" aria-label="Primary">
+    <a href="#audit" data-nav="audit">Audit</a>
+    <a href="#report" data-nav="report" aria-disabled="true" tabindex="-1">Report</a>
+    <a href="#method" data-nav="method">Method</a>
+  </nav>
+  <p class="rate" data-rate aria-live="polite"><span class="rate-dot" aria-hidden="true"></span><span data-rate-text>GitHub API · idle</span></p>
+  <button class="menu-button" type="button" aria-controls="drawer" aria-expanded="false" aria-label="Open menu" data-drawer-open>
+    <span aria-hidden="true"></span><span aria-hidden="true"></span>
+  </button>
+</header>
+
+<div class="drawer-backdrop" data-drawer-close hidden></div>
+<aside class="drawer" id="drawer" aria-label="Menu" aria-hidden="true" inert>
+  <div class="drawer-head">
+    <span class="brand"><span class="brand-mark" aria-hidden="true"></span>repoguard</span>
+    <button class="icon-button" type="button" aria-label="Close menu" data-drawer-close>✕</button>
+  </div>
+  <nav aria-label="Mobile">
+    <a href="#audit" data-nav="audit">Audit</a>
+    <a href="#report" data-nav="report" aria-disabled="true" tabindex="-1">Report</a>
+    <a href="#method" data-nav="method">Method</a>
+  </nav>
+  <p class="rate rate-drawer" data-rate><span class="rate-dot" aria-hidden="true"></span><span data-rate-text>GitHub API · idle</span></p>
+</aside>
+
+<main id="main">
+  <section class="hero" id="audit" aria-labelledby="hero-title">
+    <div class="hero-copy">
+      <p class="eyebrow">// repository security audit</p>
+      <h1 id="hero-title">Find the leak before someone else does.</h1>
+      <p class="lede">Paste a repo. RepoGuard clones it, replays its git history, checks every pinned dependency against OSV.dev and reads your workflows and Dockerfiles the way an attacker would.</p>
+      <dl class="checks">
+        <div><dt>16</dt><dd>secret patterns, in current code and every replayed commit</dd></div>
+        <div><dt>OSV</dt><dd>npm + PyPI lockfiles, with dependency paths</dd></div>
+        <div><dt>8</dt><dd>Actions rules: injection, pins, pwn requests</dd></div>
+        <div><dt>10</dt><dd>Dockerfile rules: root, baked-in secrets, unverified downloads</dd></div>
+      </dl>
+    </div>
+
+    <form class="scan-card" id="scan-form" novalidate data-glow>
+      <div class="field">
+        <label for="repo">Repository</label>
+        <div class="repo-input">
+          <span class="prefix" aria-hidden="true">github.com/</span>
+          <input id="repo" name="repo" type="text" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false"
+                 placeholder="owner/name" required aria-describedby="repo-help repo-error">
+        </div>
+        <p class="help" id="repo-help">owner/name, or any github.com link to it.</p>
+        <p class="field-error" id="repo-error" role="alert" hidden></p>
+      </div>
+
+      <button class="disclosure" type="button" aria-expanded="false" aria-controls="options" data-disclosure>
+        <span class="chev" aria-hidden="true"></span>Options and private repos
+      </button>
+      <div class="options" id="options" hidden>
+        <div class="field">
+          <div class="label-row">
+            <label for="token">GitHub token <span class="optional">optional</span></label>
+            <button class="text-button" type="button" data-modal-open="token-modal">Which token?</button>
+          </div>
+          <div class="token-input">
+            <input id="token" name="token" type="password" autocomplete="off" spellcheck="false"
+                   placeholder="github_pat_…" aria-describedby="token-help">
+            <button class="text-button reveal" type="button" aria-pressed="false" aria-controls="token" data-reveal>Show</button>
+          </div>
+          <p class="help" id="token-help">Needed for private repos; raises the API limit from 60 to 5,000 requests an hour. Kept in memory for this scan only.</p>
+        </div>
+
+        <div class="switch-row">
+          <span class="switch-label" id="sw-history-label">Replay git history</span>
+          <button class="switch" type="button" role="switch" aria-checked="true" aria-labelledby="sw-history-label" data-switch="history"><span aria-hidden="true"></span></button>
+        </div>
+        <div class="field inline" data-depth-field>
+          <label for="depth">History depth</label>
+          <select id="depth" name="depth">
+            <option value="50">50 commits</option>
+            <option value="200" selected>200 commits</option>
+            <option value="500">500 commits</option>
+            <option value="1000">1,000 commits</option>
+          </select>
+        </div>
+        <div class="switch-row">
+          <span class="switch-label" id="sw-osv-label">Check dependencies on OSV.dev</span>
+          <button class="switch" type="button" role="switch" aria-checked="true" aria-labelledby="sw-osv-label" data-switch="osv"><span aria-hidden="true"></span></button>
+        </div>
+        <div class="switch-row">
+          <span class="switch-label" id="sw-pins-label">Resolve action tags to commit SHAs</span>
+          <button class="switch" type="button" role="switch" aria-checked="true" aria-labelledby="sw-pins-label" data-switch="resolve_pins"><span aria-hidden="true"></span></button>
+        </div>
+      </div>
+
+      <button class="run-button" type="submit" data-run><span>Run audit</span><span class="arrow" aria-hidden="true">→</span></button>
+    </form>
+  </section>
+
+  <section class="progress" id="progress" aria-labelledby="progress-title" hidden>
+    <div class="progress-head">
+      <div>
+        <p class="eyebrow">// scanning</p>
+        <h2 id="progress-title"><span data-progress-repo></span></h2>
+      </div>
+      <div class="progress-actions">
+        <span class="clock" data-clock aria-label="Elapsed time">00:00.0</span>
+        <button class="ghost-button" type="button" data-cancel>Cancel</button>
+      </div>
+    </div>
+    <div class="progress-bar" role="progressbar" aria-label="Scan progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><span data-progress-fill></span></div>
+    <div class="progress-body">
+      <ol class="steps" data-steps aria-label="Scan steps"></ol>
+      <div class="terminal" data-glow>
+        <div class="terminal-head" aria-hidden="true"><i></i><i></i><i></i><span>repoguard · live log</span></div>
+        <div class="log" role="log" aria-live="off" aria-label="Scan log" data-log tabindex="0"></div>
+      </div>
+    </div>
+    <p class="sr-only" aria-live="polite" data-announce></p>
+  </section>
+
+  <section class="error-panel" id="error" aria-labelledby="error-title" hidden>
+    <p class="error-code" data-error-code></p>
+    <h2 id="error-title" data-error-title></h2>
+    <p class="error-message" data-error-message></p>
+    <p class="error-hint" data-error-hint></p>
+    <p class="countdown" data-countdown hidden></p>
+    <div class="error-actions" data-error-actions></div>
+  </section>
+
+  <section class="report" id="report" aria-labelledby="report-title" hidden></section>
+
+  <section class="method" id="method" aria-labelledby="method-title">
+    <h2 id="method-title">What happens when you press run.</h2>
+    <ol class="method-steps">
+      <li><span>01</span><div><h3>Metadata, then a shallow clone</h3><p>One call to the GitHub API checks the repo exists, its size and visibility. Then a <code>git clone --depth</code> into a temp folder with symlinks, hooks and LFS disabled. It's deleted when the scan ends.</p></div></li>
+      <li><span>02</span><div><h3>Secrets, now and in history</h3><p>Every tracked file and every line added in the replayed commits is matched against token formats. A key deleted last year still counts: it's in every clone.</p></div></li>
+      <li><span>03</span><div><h3>Dependencies, by path</h3><p>Lockfiles are walked like the package manager would, so a vulnerable package shows the chain that pulled it in. Exact versions are batch-checked against OSV.dev.</p></div></li>
+      <li><span>04</span><div><h3>Workflows and containers</h3><p>Actions are checked for script injection, unpinned tags and privileged PR checkouts. Dockerfiles for root users, baked-in secrets and unverified downloads.</p></div></li>
+    </ol>
+    <p class="privacy">Tokens are sent only to GitHub, held in memory for one scan and never written to disk or logs.</p>
+  </section>
+</main>
+
+<footer class="footer">
+  <span>repoguard <span data-version>0.2.0</span></span>
+  <a href="https://github.com/ollivanter/repoguard" rel="noopener noreferrer" target="_blank">Source on GitHub</a>
+</footer>
+
+<div class="modal-backdrop" data-modal-backdrop hidden></div>
+<div class="modal" id="token-modal" role="dialog" aria-modal="true" aria-labelledby="token-modal-title" hidden>
+  <div class="modal-head">
+    <h2 id="token-modal-title">The token RepoGuard needs</h2>
+    <button class="icon-button" type="button" aria-label="Close" data-modal-close>✕</button>
+  </div>
+  <ol class="modal-steps">
+    <li>Open <strong>GitHub → Settings → Developer settings → Fine-grained tokens</strong> and generate a new token.</li>
+    <li>Repository access: <strong>Only select repositories</strong>, then pick the repo you want to scan.</li>
+    <li>Permissions: <strong>Contents → Read-only</strong>. Metadata (read-only) is added automatically. Nothing else.</li>
+    <li>Set a short expiry (7 days is plenty) and paste the <code>github_pat_…</code> token here.</li>
+  </ol>
+  <p class="modal-note">For an organization that uses SSO, authorize the token for it after creating it. Public repos don't need a token; it only raises the rate limit.</p>
+  <div class="modal-actions"><button class="run-button small" type="button" data-modal-close>Got it</button></div>
+</div>
+</body>
+</html>

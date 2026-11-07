@@ -59,7 +59,10 @@ def is_excluded(rel: str, extra: list[str] = ()) -> bool:
     return False
 
 
-def list_files(root: Path, extra_ignores: list[str] | None = None) -> list[str]:
+LOCKFILE_NAMES = {"package-lock.json", "npm-shrinkwrap.json", "poetry.lock", "Pipfile.lock", "yarn.lock", "pnpm-lock.yaml"}
+
+
+def list_files(root: Path, extra_ignores: list[str] | None = None, include_lockfiles: bool = False) -> list[str]:
     """Files that are (or would be) committed: tracked + untracked-but-not-gitignored.
     Gitignored files (like a local .env) never reach GitHub, so they aren't leaks."""
     extra = list(extra_ignores or []) + load_ignore_patterns(root)
@@ -73,16 +76,37 @@ def list_files(root: Path, extra_ignores: list[str] | None = None) -> list[str]:
             dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
             for fn in filenames:
                 rels.append(Path(dirpath, fn).relative_to(root).as_posix())
-    return sorted(r for r in set(rels) if not is_excluded(r, extra) and (root / r).is_file())
+    def keep(r: str) -> bool:
+        if include_lockfiles and r.rsplit("/", 1)[-1] in LOCKFILE_NAMES:
+            return not any(p in SKIP_DIRS for p in r.split("/")[:-1]) and is_safe_file(root, r)
+        return not is_excluded(r, extra) and is_safe_file(root, r)
+    return sorted(r for r in set(rels) if keep(r))
 
 
-def read_text(path: Path) -> str | None:
-    """Text content, or None for binary/huge/unreadable files."""
+def is_safe_file(root: Path, rel: str) -> bool:
+    """A regular file inside root. Symlinks are refused: a hostile repo could point
+    one at /etc/passwd or ~/.ssh/id_rsa and have the scanner print parts of it."""
+    path = root / rel
     try:
-        if path.stat().st_size > MAX_FILE_BYTES:
+        if path.is_symlink() or not path.is_file():
+            return False
+        base = root.resolve()
+        return base in path.resolve().parents
+    except (OSError, RuntimeError):
+        return False
+
+
+def read_text(path: Path, root: Path | None = None, max_bytes: int = MAX_FILE_BYTES) -> str | None:
+    """Text content, or None for binary, oversized, symlinked or unreadable files."""
+    try:
+        if path.is_symlink():
+            return None
+        if root is not None and root.resolve() not in path.resolve().parents:
+            return None
+        if path.stat().st_size > max_bytes:
             return None
         data = path.read_bytes()
-    except OSError:
+    except (OSError, RuntimeError):
         return None
     if b"\0" in data[:8192]:
         return None

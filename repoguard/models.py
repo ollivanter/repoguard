@@ -30,7 +30,7 @@ class Severity(enum.IntEnum):
         return Severity(max(self - 1, Severity.LOW))
 
 
-CATEGORIES = ("secrets", "dependencies", "workflows")
+CATEGORIES = ("secrets", "dependencies", "workflows", "containers")
 
 
 @dataclass
@@ -47,6 +47,8 @@ class Finding:
     commit: str | None = None
     references: list[str] = field(default_factory=list)
     fingerprint: str = ""
+    details: dict = field(default_factory=dict)      # structured data for the UI (dependency path, CVSS…)
+    patch: dict | None = None                        # {"start": line, "before": [...], "after": [...]}
 
     def __post_init__(self) -> None:
         if self.category not in CATEGORIES:
@@ -79,6 +81,8 @@ class ScanResult:
     commit: str | None = None        # HEAD sha when known
     server_url: str = "https://github.com"
     scanned_at: str = ""
+    meta: dict = field(default_factory=dict)         # repository metadata from the GitHub API
+    categories: tuple[str, ...] = CATEGORIES
 
     def counts(self) -> dict[str, int]:
         out = {s.label: 0 for s in sorted(Severity, reverse=True)}
@@ -93,7 +97,9 @@ class ScanResult:
         return max((f.severity for f in self.findings), default=None)
 
     def to_dict(self) -> dict:
+        from .scoring import breakdown
         return {
+            "version": 2,
             "target": self.target,
             "repo": self.repo,
             "commit": self.commit,
@@ -103,5 +109,9 @@ class ScanResult:
             "counts": self.counts(),
             "stats": self.stats,
             "notes": self.notes,
+            "meta": self.meta,
+            "server_url": self.server_url,
+            "categories": list(self.categories),
+            "breakdown": breakdown(self.findings),
             "findings": [f.to_dict() for f in self.sorted_findings()],
         }

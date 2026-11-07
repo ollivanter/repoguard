@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "repoguard"
-version = "0.1.0"
-description = "Security audit for GitHub repos: leaked secrets (incl. git history), vulnerable dependencies and risky GitHub Actions workflows."
+version = "0.2.0"
+description = "Security audit for GitHub repos: leaked secrets (incl. git history), vulnerable dependencies, risky GitHub Actions workflows and Dockerfiles. CLI, GitHub Action and web UI."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Achyuta" }]
@@ -13,13 +13,17 @@ requires-python = ">=3.11"
 dependencies = ["requests>=2.31", "PyYAML>=6.0", "packaging>=23.0"]
 
 [project.optional-dependencies]
-test = ["pytest>=8"]
+web = ["fastapi>=0.115", "uvicorn>=0.30"]
+test = ["pytest>=8", "fastapi>=0.115", "uvicorn>=0.30", "httpx>=0.27"]
 
 [project.scripts]
 repoguard = "repoguard.cli:main"
 
 [tool.setuptools]
-packages = ["repoguard"]
+packages = ["repoguard", "repoguard.web"]
+
+[tool.setuptools.package-data]
+"repoguard.web" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
