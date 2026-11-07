@@ -1,0 +1,24 @@
+name: RepoGuard
+
+# RepoGuard scanning its own repository.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0            # full history, so leaked-then-deleted secrets are found
+          persist-credentials: false
+      - uses: ./
+        with:
+          fail-on: high

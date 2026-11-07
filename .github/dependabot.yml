@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # Keeps the pinned action SHAs up to date (with the version in a comment).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly

@@ -1,0 +1,106 @@
+name: RepoGuard
+description: "Security audit for your repo: leaked secrets (including git history), vulnerable dependencies and risky GitHub Actions workflows."
+author: ollivanter
+branding:
+  icon: shield
+  color: green
+
+inputs:
+  path:
+    description: Folder to scan.
+    default: "."
+  fail-on:
+    description: Fail the job when a finding is at least this severe (never, low, medium, high, critical).
+    default: high
+  comment:
+    description: "Post (and keep updating) one report comment on pull requests. Needs `pull-requests: write`."
+    default: "true"
+  history:
+    description: "Scan git history for secrets. Needs `fetch-depth: 0` on actions/checkout."
+    default: "true"
+  max-commits:
+    description: How many commits of history to scan.
+    default: "1000"
+  github-token:
+    description: Token used for the PR comment.
+    default: ${{ github.token }}
+
+outputs:
+  score:
+    description: Security score from 0 to 100.
+    value: ${{ steps.scan.outputs.score }}
+  grade:
+    description: Letter grade (A–F).
+    value: ${{ steps.scan.outputs.grade }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+      with:
+        python-version: "3.12"
+
+    - name: Install RepoGuard
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: python -m pip install --quiet --disable-pip-version-check "$ACTION_PATH"
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        SCAN_PATH: ${{ inputs.path }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        HISTORY: ${{ inputs.history }}
+        MAX_COMMITS: ${{ inputs.max-commits }}
+      run: |
+        out="$RUNNER_TEMP/repoguard"
+        mkdir -p "$out"
+        flags=()
+        if [ "$HISTORY" != "true" ]; then flags+=(--no-history); fi
+        set +e
+        repoguard scan "$SCAN_PATH" "${flags[@]}" --max-commits "$MAX_COMMITS" --fail-on "$FAIL_ON" \
+          --json "$out/report.json" --markdown "$out/report.md" --html "$out/report.html"
+        code=$?
+        set -e
+        if [ "$code" -ge 2 ]; then exit "$code"; fi
+        python - "$out/report.json" <<'PY' >> "$GITHUB_OUTPUT"
+        import json, sys
+        r = json.load(open(sys.argv[1]))
+        print(f"score={r['score']}")
+        print(f"grade={r['grade']}")
+        PY
+        echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+        echo "dir=$out" >> "$GITHUB_OUTPUT"
+        cat "$out/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Comment on pull request
+      if: ${{ inputs.comment == 'true' && (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') }}
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        REPORT_DIR: ${{ steps.scan.outputs.dir }}
+      run: python -m repoguard.ghcomment "$REPORT_DIR/report.md"
+
+    - name: Upload HTML report
+      if: ${{ always() && steps.scan.outputs.dir != '' }}
+      uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+      with:
+        name: repoguard-report
+        path: ${{ steps.scan.outputs.dir }}
+        if-no-files-found: ignore
+
+    - name: Result
+      shell: bash
+      env:
+        CODE: ${{ steps.scan.outputs.exit_code }}
+        SCORE: ${{ steps.scan.outputs.score }}
+        GRADE: ${{ steps.scan.outputs.grade }}
+        FAIL_ON: ${{ inputs.fail-on }}
+      run: |
+        echo "RepoGuard score: $SCORE/100 (grade $GRADE)"
+        if [ "$CODE" = "1" ]; then
+          echo "::error::RepoGuard found issues at or above '$FAIL_ON' severity. See the job summary."
+          exit 1
+        fi
