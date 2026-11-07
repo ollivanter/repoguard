@@ -88,8 +88,6 @@ def scan_path(root: Path, *, label: str | None = None, slug: str | None = None, 
                    resolve_pins=resolve_pins)
     ctx = Context(progress=progress or Progress(STEP_IDS), osv_client=osv_client, pin_resolver=pin_resolver)
     result = scan_local(root, opts, ctx, label=label, slug=slug)
-    if offline and result.stats.get("packages_found"):
-        result.notes.append("Dependency vulnerabilities weren't checked (offline mode).")
     if history and result.stats.get("commits_scanned", 0) >= max_commits:
         result.notes.append(f"Only the newest {max_commits} commits were checked for secrets "
                             "(raise it with --max-commits).")

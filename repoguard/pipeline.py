@@ -220,6 +220,8 @@ def analyze(root: Path, result: ScanResult, opts: Options, ctx: Context) -> Scan
             result.notes.append(f"Dependency vulnerabilities weren't checked: {exc}.")
             p.fail("osv", str(exc))
     else:
+        if packages and not opts.osv:
+            result.notes.append("Dependency vulnerabilities weren't checked: the OSV.dev lookup was turned off.")
         p.skip("osv", "turned off" if packages and not opts.osv else "no pinned packages to check")
 
     # workflows
